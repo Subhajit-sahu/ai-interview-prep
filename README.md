@@ -29,13 +29,6 @@
 6. 🔗 [Assets](#links)
 7. 🚀 [More](#more)
 
-## 🚨 Tutorial
-
-This repository contains the code corresponding to an in-depth tutorial available on our YouTube channel, <a href="https://www.youtube.com/@javascriptmastery/videos" target="_blank"><b>JavaScript Mastery</b></a>.
-
-If you prefer visual learning, this is the perfect resource for you. Follow our tutorial to learn how to build projects like these step-by-step in a beginner-friendly manner!
-
-<a href="https://www.youtube.com/watch?v=8GK8R77Bd7g" target="_blank"><img src="https://github.com/sujatagunale/EasyRead/assets/151519281/1736fca5-a031-4854-8c09-bc110e3bc16d" /></a>
 
 ## <a name="introduction">🤖 Introduction</a>
 
@@ -51,6 +44,7 @@ Built with Next.js for the user interface and backend logic, Firebase for authen
 - Tailwind CSS
 - Vapi AI
 - shadcn/ui
+- Open Router
 - Google Gemeni
 - Zod
 
@@ -703,7 +697,3 @@ export const dummyInterviews: Interview[] = [
 
 </details>
 
-
-## <a name="links">🔗 Assets</a>
-
-Public assets used in the project can be found [here](https://drive.google.com/drive/folders/1DuQ9bHH3D3ZAN_CFKfBgsaB8DEhEdnog?usp=sharing)
