@@ -33,6 +33,18 @@ export function safeParseJsonArray(input: string): string[] {
   throw new Error("Unable to parse assistant output into JSON array of strings.");
 }
 
+function normalizeSecret(val: string | null | undefined): string {
+  if (!val) return "";
+  let s = val.trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 interface AuthenticationResult {
   verifiedUserId?: string;
   error?: string;
@@ -84,15 +96,16 @@ async function authenticateAndResolveCandidate(
     };
   }
 
-  const customHeaderSecret = request.headers.get("x-vapi-secret");
-  const authHeader = request.headers.get("authorization");
+  const cleanConfiguredSecret = normalizeSecret(configuredWebhookSecret);
+  const customHeaderSecret = normalizeSecret(request.headers.get("x-vapi-secret"));
+  const authHeader = request.headers.get("authorization")?.trim();
   const bearerSecret = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : null;
+    ? normalizeSecret(authHeader.slice(7))
+    : "";
 
   const isWebhookAuthenticated =
-    customHeaderSecret === configuredWebhookSecret ||
-    bearerSecret === configuredWebhookSecret;
+    (customHeaderSecret.length > 0 && customHeaderSecret === cleanConfiguredSecret) ||
+    (bearerSecret.length > 0 && bearerSecret === cleanConfiguredSecret);
 
   if (!isWebhookAuthenticated) {
     return {
@@ -424,8 +437,18 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  const normalized = normalizeSecret(secret);
+
   return NextResponse.json(
-    { success: true, message: "PrepWise Vapi generation endpoint is healthy" },
+    {
+      success: true,
+      message: "PrepWise Vapi generation endpoint is healthy",
+      webhookConfigured: Boolean(secret),
+      secretLength: normalized.length,
+      secretPrefix: normalized.length >= 4 ? normalized.slice(0, 4) : null,
+      secretSuffix: normalized.length >= 4 ? normalized.slice(-4) : null,
+    },
     { status: 200 }
   );
 }
