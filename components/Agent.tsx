@@ -5,7 +5,8 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { vapi } from "@/lib/vapi.sdk";
+import { toast } from "sonner";
+import { vapi, startVapiCall } from "@/lib/vapi.sdk";
 import { interviewer } from "@/constants";
 import { createFeedback } from "@/lib/actions/general.action";
 
@@ -63,7 +64,9 @@ const Agent = ({
     };
 
     const onError = (error: Error) => {
-      console.log("Error:", error);
+      console.error("Vapi call error:", error);
+      toast.error(error?.message || "An error occurred during the interview session.");
+      setCallStatus(CallStatus.INACTIVE);
     };
 
     vapi.on("call-start", onCallStart);
@@ -118,30 +121,22 @@ const Agent = ({
   const handleCall = async () => {
     setCallStatus(CallStatus.CONNECTING);
 
-    if (type === "generate") {
-      await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
-        variableValues: {
-          username: userName,
-          userid: userId,
-        },
-        metadata : {
-          userid: userId,
-        }
+    try {
+      await startVapiCall(vapi, {
+        type,
+        userName,
+        userId,
+        questions,
+        interviewerDTO: interviewer,
       });
-      
-    } else {
-      let formattedQuestions = "";
-      if (questions) {
-        formattedQuestions = questions
-          .map((question) => `- ${question}`)
-          .join("\n");
-      }
-
-      await vapi.start(interviewer, {
-        variableValues: {
-          questions: formattedQuestions,
-        },
-      });
+    } catch (error: unknown) {
+      console.error("Failed to start Vapi session:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to start interview session. Please try again.";
+      toast.error(message);
+      setCallStatus(CallStatus.INACTIVE);
     }
   };
 
