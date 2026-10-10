@@ -24,6 +24,7 @@ interface SavedMessage {
 const Agent = ({
   userName,
   userId,
+  profileImage,
   interviewId,
   feedbackId,
   type,
@@ -123,7 +124,11 @@ const Agent = ({
           username: userName,
           userid: userId,
         },
+        metadata : {
+          userid: userId,
+        }
       });
+      
     } else {
       let formattedQuestions = "";
       if (questions) {
@@ -167,7 +172,7 @@ const Agent = ({
         <div className="card-border">
           <div className="card-content">
             <Image
-              src="/user-avatar.png"
+              src={profileImage || "/user-avatar.png"}
               alt="profile-image"
               width={539}
               height={539}
