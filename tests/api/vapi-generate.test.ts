@@ -300,6 +300,87 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     expect(res.status).toBe(200);
   });
 
+  it("Authentication: Server secret with trailing newline and quotes matches clean incoming header", async () => {
+    process.env.VAPI_WEBHOOK_SECRET = `"${TEST_WEBHOOK_SECRET}\r\n"`;
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = createRequest(validPayload, {
+      "x-vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it("Authentication: Incoming x-vapi-secret with surrounding quotes or whitespace matches server secret", async () => {
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = createRequest(validPayload, {
+      "x-vapi-secret": `  "${TEST_WEBHOOK_SECRET}"  `,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it("Authentication: Whitespace-only VAPI_WEBHOOK_SECRET fails closed with HTTP 500", async () => {
+    process.env.VAPI_WEBHOOK_SECRET = "   \n\t  ";
+    const req = createRequest(validPayload, {
+      "x-vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error).toContain("VAPI_WEBHOOK_SECRET is not configured");
+  });
+
+  it("Authentication: Fallback to VAPI_SECRET succeeds when VAPI_WEBHOOK_SECRET is unset", async () => {
+    delete process.env.VAPI_WEBHOOK_SECRET;
+    process.env.VAPI_SECRET = "fallback-secret-987";
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = createRequest(validPayload, {
+      "x-vapi-secret": "fallback-secret-987",
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it("Authentication: Accepts alternate header variants vapi-secret and x-webhook-secret", async () => {
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req1 = createRequest(validPayload, {
+      "vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res1 = await POST(req1);
+    expect(res1.status).toBe(200);
+
+    const req2 = createRequest(validPayload, {
+      "x-webhook-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res2 = await POST(req2);
+    expect(res2.status).toBe(200);
+  });
+
+  it("Authentication: Accepts raw Authorization header without Bearer prefix", async () => {
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = createRequest(validPayload, {
+      authorization: TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it("Authentication: Accepts webhook secret in body when headers are omitted", async () => {
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = createRequest({
+      ...validPayload,
+      secret: TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
   // ---------------- VALIDATION & ERROR HANDLING TESTS ----------------
 
   it("Validation: Missing required interview preferences (role, type, level, amount) are rejected with 400", async () => {

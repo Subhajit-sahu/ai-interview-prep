@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { auth, db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
@@ -45,6 +46,14 @@ function normalizeSecret(val: string | null | undefined): string {
   return s;
 }
 
+function safeCompareSecret(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const bufProvided = Buffer.from(provided, "utf8");
+  const bufExpected = Buffer.from(expected, "utf8");
+  if (bufProvided.length !== bufExpected.length) return false;
+  return crypto.timingSafeEqual(bufProvided, bufExpected);
+}
+
 interface AuthenticationResult {
   verifiedUserId?: string;
   error?: string;
@@ -65,7 +74,9 @@ async function authenticateAndResolveCandidate(
   request: Request,
   body: Record<string, unknown>
 ): Promise<AuthenticationResult> {
-  const configuredWebhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+  const rawConfiguredSecret =
+    process.env.VAPI_WEBHOOK_SECRET || process.env.VAPI_SECRET;
+  const cleanConfiguredSecret = normalizeSecret(rawConfiguredSecret);
 
   // 1. Check for cryptographically verified candidate token
   const tokenCandidate =
@@ -73,7 +84,7 @@ async function authenticateAndResolveCandidate(
     (typeof body.idToken === "string" && body.idToken) ||
     request.headers.get("x-user-token");
 
-  if (tokenCandidate && tokenCandidate !== configuredWebhookSecret) {
+  if (tokenCandidate && normalizeSecret(tokenCandidate) !== cleanConfiguredSecret) {
     try {
       const decoded = await auth.verifyIdToken(tokenCandidate.trim());
       if (decoded?.uid) {
@@ -88,7 +99,7 @@ async function authenticateAndResolveCandidate(
   }
 
   // 2. If no valid cryptographic token is provided, require trusted webhook credentials
-  if (!configuredWebhookSecret) {
+  if (!cleanConfiguredSecret) {
     // FAIL CLOSED: Never silently accept unauthenticated requests when webhook secret is missing
     return {
       error: "Authentication configuration error: VAPI_WEBHOOK_SECRET is not configured on the server",
@@ -96,16 +107,27 @@ async function authenticateAndResolveCandidate(
     };
   }
 
-  const cleanConfiguredSecret = normalizeSecret(configuredWebhookSecret);
-  const customHeaderSecret = normalizeSecret(request.headers.get("x-vapi-secret"));
+  const customHeaderSecret =
+    normalizeSecret(request.headers.get("x-vapi-secret")) ||
+    normalizeSecret(request.headers.get("vapi-secret")) ||
+    normalizeSecret(request.headers.get("x-webhook-secret"));
+
   const authHeader = request.headers.get("authorization")?.trim();
   const bearerSecret = authHeader?.startsWith("Bearer ")
     ? normalizeSecret(authHeader.slice(7))
-    : "";
+    : normalizeSecret(authHeader);
+
+  const bodySecret =
+    typeof body.secret === "string"
+      ? normalizeSecret(body.secret)
+      : typeof body.webhookSecret === "string"
+      ? normalizeSecret(body.webhookSecret)
+      : "";
 
   const isWebhookAuthenticated =
-    (customHeaderSecret.length > 0 && customHeaderSecret === cleanConfiguredSecret) ||
-    (bearerSecret.length > 0 && bearerSecret === cleanConfiguredSecret);
+    safeCompareSecret(customHeaderSecret, cleanConfiguredSecret) ||
+    safeCompareSecret(bearerSecret, cleanConfiguredSecret) ||
+    safeCompareSecret(bodySecret, cleanConfiguredSecret);
 
   if (!isWebhookAuthenticated) {
     return {
@@ -437,17 +459,15 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  const secret = process.env.VAPI_WEBHOOK_SECRET;
-  const normalized = normalizeSecret(secret);
+  const rawConfiguredSecret =
+    process.env.VAPI_WEBHOOK_SECRET || process.env.VAPI_SECRET;
+  const cleanConfiguredSecret = normalizeSecret(rawConfiguredSecret);
 
   return NextResponse.json(
     {
       success: true,
       message: "PrepWise Vapi generation endpoint is healthy",
-      webhookConfigured: Boolean(secret),
-      secretLength: normalized.length,
-      secretPrefix: normalized.length >= 4 ? normalized.slice(0, 4) : null,
-      secretSuffix: normalized.length >= 4 ? normalized.slice(-4) : null,
+      webhookConfigured: Boolean(cleanConfiguredSecret),
     },
     { status: 200 }
   );
