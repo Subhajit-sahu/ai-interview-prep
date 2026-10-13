@@ -107,6 +107,12 @@ async function authenticateAndResolveCandidate(
     };
   }
 
+  // TODO: remove after debugging - query parameter secret fallback
+  const url = new URL(request.url);
+  const querySecret = normalizeSecret(
+    url.searchParams.get("secret") || url.searchParams.get("vapi_secret")
+  );
+
   const customHeaderSecret =
     normalizeSecret(request.headers.get("x-vapi-secret")) ||
     normalizeSecret(request.headers.get("vapi-secret")) ||
@@ -125,11 +131,22 @@ async function authenticateAndResolveCandidate(
       : "";
 
   const isWebhookAuthenticated =
+    safeCompareSecret(querySecret, cleanConfiguredSecret) ||
     safeCompareSecret(customHeaderSecret, cleanConfiguredSecret) ||
     safeCompareSecret(bearerSecret, cleanConfiguredSecret) ||
     safeCompareSecret(bodySecret, cleanConfiguredSecret);
 
   if (!isWebhookAuthenticated) {
+    const incomingHeaderKeys = Array.from(request.headers.keys());
+    console.warn("[Vapi Auth Failure]", {
+      timestamp: new Date().toISOString(),
+      headerKeys: incomingHeaderKeys,
+      hasCustomHeader: Boolean(customHeaderSecret),
+      hasBearer: Boolean(bearerSecret),
+      hasQuerySecret: Boolean(querySecret),
+      hasBodySecret: Boolean(bodySecret),
+      serverSecretConfigured: Boolean(cleanConfiguredSecret),
+    });
     return {
       error: "Unauthorized: Invalid or missing webhook credentials",
       status: 401,
@@ -191,7 +208,63 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. Authenticate caller and securely resolve candidate identity (Fail-Closed)
+    // 2. Unwrap Vapi toolCallList / toolCalls payloads if wrapped
+    let activeToolCallId: string | null = null;
+    const message = (body.message as Record<string, unknown>) || body;
+    const toolCallList = (message.toolCallList || message.toolCalls) as
+      | Array<Record<string, unknown>>
+      | undefined;
+
+    if (Array.isArray(toolCallList) && toolCallList.length > 0) {
+      const firstToolCall = toolCallList[0];
+      if (typeof firstToolCall.id === "string") {
+        activeToolCallId = firstToolCall.id;
+      }
+      const fn = firstToolCall.function as Record<string, unknown> | undefined;
+      const args = fn?.arguments;
+      if (typeof args === "string") {
+        try {
+          body = { ...body, ...(JSON.parse(args) as Record<string, unknown>) };
+        } catch {
+          // keep body as-is if parsing fails
+        }
+      } else if (typeof args === "object" && args !== null) {
+        body = { ...body, ...(args as Record<string, unknown>) };
+      }
+
+      // Trusted candidate identity from session context takes precedence over model-supplied userid
+      const call =
+        (message.call as Record<string, unknown>) ||
+        (body.call as Record<string, unknown>);
+      if (call) {
+        const varValues = call.variableValues as
+          | Record<string, unknown>
+          | undefined;
+        const assistantOverrides = call.assistantOverrides as
+          | Record<string, unknown>
+          | undefined;
+        const overrideVarValues = assistantOverrides?.variableValues as
+          | Record<string, unknown>
+          | undefined;
+        const metadata = call.metadata as Record<string, unknown> | undefined;
+
+        const trustedUserId =
+          (typeof varValues?.userid === "string" && varValues.userid) ||
+          (typeof varValues?.userId === "string" && varValues.userId) ||
+          (typeof overrideVarValues?.userid === "string" &&
+            overrideVarValues.userid) ||
+          (typeof overrideVarValues?.userId === "string" &&
+            overrideVarValues.userId) ||
+          (typeof metadata?.userid === "string" && metadata.userid) ||
+          (typeof metadata?.userId === "string" && metadata.userId);
+
+        if (trustedUserId && trustedUserId.trim()) {
+          body.userid = trustedUserId.trim();
+        }
+      }
+    }
+
+    // 3. Authenticate caller and securely resolve candidate identity (Fail-Closed)
     const authResult = await authenticateAndResolveCandidate(request, body);
     if (authResult.error || !authResult.verifiedUserId) {
       return NextResponse.json(
@@ -437,19 +510,32 @@ export async function POST(request: Request) {
     }
 
     // 10. Return consistent, contract-aligned response
-    return NextResponse.json(
-      {
-        success: true,
-        interviewId: docRef.id,
-        role: interview.role,
-        type: interview.type,
-        level: interview.level,
-        amount: questionAmount,
-        techstack: interview.techstack,
-        questions: interview.questions,
-      },
-      { status: 200 }
-    );
+    const flatResult = {
+      success: true,
+      interviewId: docRef.id,
+      role: interview.role,
+      type: interview.type,
+      level: interview.level,
+      amount: questionAmount,
+      techstack: interview.techstack,
+      questions: interview.questions,
+    };
+
+    if (activeToolCallId) {
+      return NextResponse.json(
+        {
+          results: [
+            {
+              toolCallId: activeToolCallId,
+              result: JSON.stringify(flatResult),
+            },
+          ],
+        },
+        { status: 200 }
+      );
+    }
+
+    return NextResponse.json(flatResult, { status: 200 });
   } catch {
     return NextResponse.json(
       { success: false, error: "Internal server error" },

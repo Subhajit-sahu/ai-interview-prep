@@ -381,6 +381,154 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     expect(res.status).toBe(200);
   });
 
+  it("Authentication: Accepts ?secret= query parameter fallback", async () => {
+    mockOpenRouterSuccess(["Valid question"]);
+
+    const req = new Request(
+      `http://localhost:3000/api/vapi/generate?secret=${TEST_WEBHOOK_SECRET}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validPayload),
+      }
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.interviewId).toBeDefined();
+  });
+
+  it("Vapi Payload Unwrapping: Unwraps message.toolCallList payload and returns { results: [{ toolCallId, result }] }", async () => {
+    mockOpenRouterSuccess(["What is React state"]);
+
+    const wrappedPayload = {
+      message: {
+        type: "tool-calls",
+        toolCallList: [
+          {
+            id: "call_vapi_987",
+            type: "function",
+            function: {
+              name: "generate_interview_questions",
+              arguments: {
+                role: "Fullstack Engineer",
+                type: "Technical",
+                level: "Mid",
+                amount: 3,
+                techstack: ["Node.js", "React"],
+                userid: "existing-candidate-uid",
+              },
+            },
+          },
+        ],
+      },
+    };
+
+    const req = createRequest(wrappedPayload, {
+      "x-vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.results).toBeDefined();
+    expect(Array.isArray(data.results)).toBe(true);
+    expect(data.results[0].toolCallId).toBe("call_vapi_987");
+
+    const parsedResult = JSON.parse(data.results[0].result);
+    expect(parsedResult.success).toBe(true);
+    expect(parsedResult.role).toBe("Fullstack Engineer");
+    expect(parsedResult.interviewId).toBeDefined();
+  });
+
+  it("Vapi Payload Unwrapping: Handles stringified arguments in message.toolCallList", async () => {
+    mockOpenRouterSuccess(["Explain TypeScript generics"]);
+
+    const wrappedPayload = {
+      message: {
+        type: "tool-calls",
+        toolCallList: [
+          {
+            id: "call_vapi_stringified_1",
+            type: "function",
+            function: {
+              name: "generate_interview_questions",
+              arguments: JSON.stringify({
+                role: "Backend Engineer",
+                type: "Technical",
+                level: "Senior",
+                amount: 2,
+                techstack: "Go, PostgreSQL",
+                userid: "existing-candidate-uid",
+              }),
+            },
+          },
+        ],
+      },
+    };
+
+    const req = createRequest(wrappedPayload, {
+      "x-vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.results).toBeDefined();
+    expect(data.results[0].toolCallId).toBe("call_vapi_stringified_1");
+    const parsed = JSON.parse(data.results[0].result);
+    expect(parsed.role).toBe("Backend Engineer");
+    expect(parsed.techstack).toEqual(["Go", "PostgreSQL"]);
+  });
+
+  it("Vapi Payload Unwrapping: Trusted userid in call metadata takes precedence over model-supplied wrong userid", async () => {
+    mockOpenRouterSuccess(["Question about CSS"]);
+
+    const wrappedPayload = {
+      message: {
+        type: "tool-calls",
+        toolCallList: [
+          {
+            id: "call_vapi_metadata_precedence",
+            type: "function",
+            function: {
+              name: "generate_interview_questions",
+              arguments: {
+                role: "Frontend Engineer",
+                type: "Technical",
+                level: "Junior",
+                amount: 1,
+                techstack: ["CSS"],
+                userid: "wrong-hallucinated-model-uid",
+              },
+            },
+          },
+        ],
+        call: {
+          metadata: {
+            userid: "existing-candidate-uid",
+          },
+        },
+      },
+    };
+
+    const req = createRequest(wrappedPayload, {
+      "x-vapi-secret": TEST_WEBHOOK_SECRET,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.results).toBeDefined();
+    expect(data.results[0].toolCallId).toBe("call_vapi_metadata_precedence");
+
+    // Verify Firestore persistence received the trusted candidate UID from call.metadata, NOT the model-supplied one
+    expect(mockAdd).toHaveBeenCalled();
+    const savedDoc = mockAdd.mock.calls[mockAdd.mock.calls.length - 1][0];
+    expect(savedDoc.userId).toBe("existing-candidate-uid");
+  });
+
   // ---------------- VALIDATION & ERROR HANDLING TESTS ----------------
 
   it("Validation: Missing required interview preferences (role, type, level, amount) are rejected with 400", async () => {
