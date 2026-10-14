@@ -261,7 +261,7 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
-    const model = process.env.OPENROUTER_MODEL || "mistralai/devstral-2512:free";
+    const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 
     // 5. Compose strict prompt for OpenRouter
     const basePrompt = `
@@ -286,7 +286,7 @@ export async function POST(request: Request) {
         Thank you! <3
 `;
 
-    // 6. Call OpenRouter with reasoning enabled
+    // 6. Call OpenRouter
     let firstData: {
       choices?: Array<{
         message?: {
@@ -311,6 +311,15 @@ export async function POST(request: Request) {
       });
 
       if (!firstResponse.ok) {
+        const errorText =
+          typeof firstResponse.text === "function"
+            ? await firstResponse.text().catch(() => "")
+            : "";
+        console.error("[OpenRouter Generation Error]", {
+          status: firstResponse.status,
+          model,
+          error: errorText,
+        });
         return NextResponse.json(
           { success: false, error: "Failed to generate interview questions from AI service" },
           { status: 502 }
@@ -318,7 +327,8 @@ export async function POST(request: Request) {
       }
 
       firstData = (await firstResponse.json()) as typeof firstData;
-    } catch {
+    } catch (fetchErr) {
+      console.error("[OpenRouter Communication Error]", fetchErr);
       return NextResponse.json(
         { success: false, error: "AI service communication failure" },
         { status: 502 }
@@ -334,71 +344,91 @@ export async function POST(request: Request) {
 
     const assistantMsg = firstData.choices[0].message;
 
-    // 7. Follow-up verification call preserving reasoning details
-    const followUpMessages = [
-      { role: "user", content: basePrompt },
-      {
-        role: "assistant",
-        content: assistantMsg.content ?? "",
-        ...(assistantMsg.reasoning_details ? { reasoning_details: assistantMsg.reasoning_details } : {}),
-      },
-      { role: "user", content: "Are you sure? Think carefully." },
-    ];
+    // 7. Parse generated questions (fast path: try initial output directly)
+    let questions: string[] = [];
+    if (assistantMsg.content) {
+      try {
+        questions = safeParseJsonArray(assistantMsg.content);
+      } catch {
+        // Fall back to follow-up verification below if initial parsing fails
+      }
+    }
 
-    let secondData: {
-      choices?: Array<{
-        message?: {
-          content?: string;
-        };
-      }>;
-    };
-    try {
-      const secondResponse = await fetch(OPENROUTER_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${openRouterApiKey}`,
+    if (questions.length === 0) {
+      // Follow-up verification call preserving reasoning details if initial output was not clean JSON
+      const followUpMessages = [
+        { role: "user", content: basePrompt },
+        {
+          role: "assistant",
+          content: assistantMsg.content ?? "",
+          ...(assistantMsg.reasoning_details ? { reasoning_details: assistantMsg.reasoning_details } : {}),
         },
-        body: JSON.stringify({
-          model,
-          messages: followUpMessages,
-          temperature: 0,
-        }),
-      });
+        { role: "user", content: "Are you sure? Think carefully." },
+      ];
 
-      if (!secondResponse.ok) {
+      let secondData: {
+        choices?: Array<{
+          message?: {
+            content?: string;
+          };
+        }>;
+      };
+      try {
+        const secondResponse = await fetch(OPENROUTER_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${openRouterApiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: followUpMessages,
+            temperature: 0,
+          }),
+        });
+
+        if (!secondResponse.ok) {
+          const errorText =
+            typeof secondResponse.text === "function"
+              ? await secondResponse.text().catch(() => "")
+              : "";
+          console.error("[OpenRouter Finalization Error]", {
+            status: secondResponse.status,
+            model,
+            error: errorText,
+          });
+          return NextResponse.json(
+            { success: false, error: "Failed to finalize interview questions from AI service" },
+            { status: 502 }
+          );
+        }
+
+        secondData = (await secondResponse.json()) as typeof secondData;
+      } catch (secondErr) {
+        console.error("[OpenRouter Finalization Fetch Error]", secondErr);
         return NextResponse.json(
-          { success: false, error: "Failed to finalize interview questions from AI service" },
+          { success: false, error: "AI service communication failure during finalization" },
           { status: 502 }
         );
       }
 
-      secondData = (await secondResponse.json()) as typeof secondData;
-    } catch {
-      return NextResponse.json(
-        { success: false, error: "AI service communication failure during finalization" },
-        { status: 502 }
-      );
-    }
+      if (!secondData?.choices?.[0]?.message) {
+        return NextResponse.json(
+          { success: false, error: "Invalid response from AI service (final reasoning)" },
+          { status: 502 }
+        );
+      }
 
-    if (!secondData?.choices?.[0]?.message) {
-      return NextResponse.json(
-        { success: false, error: "Invalid response from AI service (final reasoning)" },
-        { status: 502 }
-      );
-    }
+      const finalContent = secondData.choices[0].message.content ?? assistantMsg.content ?? "[]";
 
-    const finalContent = secondData.choices[0].message.content ?? assistantMsg.content ?? "[]";
-
-    // 8. Parse and validate generated questions
-    let questions: string[] = [];
-    try {
-      questions = safeParseJsonArray(finalContent);
-    } catch {
-      return NextResponse.json(
-        { success: false, error: "Failed to parse interview questions format from AI output" },
-        { status: 502 }
-      );
+      try {
+        questions = safeParseJsonArray(finalContent);
+      } catch {
+        return NextResponse.json(
+          { success: false, error: "Failed to parse interview questions format from AI output" },
+          { status: 502 }
+        );
+      }
     }
 
     // 9. Persist interview in Firestore associated strictly with verified candidate

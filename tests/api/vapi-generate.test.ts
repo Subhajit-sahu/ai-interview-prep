@@ -66,7 +66,7 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     process.env = {
       ...originalEnv,
       OPENROUTER_API_KEY: "test-openrouter-key",
-      OPENROUTER_MODEL: "mistralai/devstral-2512:free",
+      OPENROUTER_MODEL: "openai/gpt-4o-mini",
       VAPI_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
     };
 
