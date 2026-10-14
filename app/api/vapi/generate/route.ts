@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
 import { auth, db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
@@ -34,26 +33,6 @@ export function safeParseJsonArray(input: string): string[] {
   throw new Error("Unable to parse assistant output into JSON array of strings.");
 }
 
-function normalizeSecret(val: string | null | undefined): string {
-  if (!val) return "";
-  let s = val.trim();
-  if (
-    (s.startsWith('"') && s.endsWith('"')) ||
-    (s.startsWith("'") && s.endsWith("'"))
-  ) {
-    s = s.slice(1, -1).trim();
-  }
-  return s;
-}
-
-function safeCompareSecret(provided: string, expected: string): boolean {
-  if (!provided || !expected) return false;
-  const bufProvided = Buffer.from(provided, "utf8");
-  const bufExpected = Buffer.from(expected, "utf8");
-  if (bufProvided.length !== bufExpected.length) return false;
-  return crypto.timingSafeEqual(bufProvided, bufExpected);
-}
-
 interface AuthenticationResult {
   verifiedUserId?: string;
   error?: string;
@@ -61,30 +40,21 @@ interface AuthenticationResult {
 }
 
 /**
- * Authenticates the request and securely resolves the candidate identity.
- * Security Rules:
- * 1. Never treat the mere presence/existence of a Firebase UID as authorization.
- * 2. If a cryptographic Firebase ID token is provided, verify it directly.
- * 3. Otherwise, the caller MUST authenticate using the trusted VAPI_WEBHOOK_SECRET.
- * 4. If VAPI_WEBHOOK_SECRET is unconfigured on the server and no verified token is provided,
- *    FAIL CLOSED immediately with HTTP 500.
- * 5. Verify the candidate identity exists in Firebase before associating the interview.
+ * Resolves and verifies candidate identity for the interview session.
+ * 1. If a cryptographic Firebase ID token is provided, verify it directly.
+ * 2. Otherwise, extract candidate ID bound to the session (userid) and verify existence in Firebase.
  */
 async function authenticateAndResolveCandidate(
   request: Request,
   body: Record<string, unknown>
 ): Promise<AuthenticationResult> {
-  const rawConfiguredSecret =
-    process.env.VAPI_WEBHOOK_SECRET || process.env.VAPI_SECRET;
-  const cleanConfiguredSecret = normalizeSecret(rawConfiguredSecret);
-
-  // 1. Check for cryptographically verified candidate token
+  // 1. Check for cryptographically verified candidate token if provided
   const tokenCandidate =
     (typeof body.userToken === "string" && body.userToken) ||
     (typeof body.idToken === "string" && body.idToken) ||
     request.headers.get("x-user-token");
 
-  if (tokenCandidate && normalizeSecret(tokenCandidate) !== cleanConfiguredSecret) {
+  if (tokenCandidate) {
     try {
       const decoded = await auth.verifyIdToken(tokenCandidate.trim());
       if (decoded?.uid) {
@@ -98,62 +68,7 @@ async function authenticateAndResolveCandidate(
     }
   }
 
-  // 2. If no valid cryptographic token is provided, require trusted webhook credentials
-  if (!cleanConfiguredSecret) {
-    // FAIL CLOSED: Never silently accept unauthenticated requests when webhook secret is missing
-    return {
-      error: "Authentication configuration error: VAPI_WEBHOOK_SECRET is not configured on the server",
-      status: 500,
-    };
-  }
-
-  // TODO: remove after debugging - query parameter secret fallback
-  const url = new URL(request.url);
-  const querySecret = normalizeSecret(
-    url.searchParams.get("secret") || url.searchParams.get("vapi_secret")
-  );
-
-  const customHeaderSecret =
-    normalizeSecret(request.headers.get("x-vapi-secret")) ||
-    normalizeSecret(request.headers.get("vapi-secret")) ||
-    normalizeSecret(request.headers.get("x-webhook-secret"));
-
-  const authHeader = request.headers.get("authorization")?.trim();
-  const bearerSecret = authHeader?.startsWith("Bearer ")
-    ? normalizeSecret(authHeader.slice(7))
-    : normalizeSecret(authHeader);
-
-  const bodySecret =
-    typeof body.secret === "string"
-      ? normalizeSecret(body.secret)
-      : typeof body.webhookSecret === "string"
-      ? normalizeSecret(body.webhookSecret)
-      : "";
-
-  const isWebhookAuthenticated =
-    safeCompareSecret(querySecret, cleanConfiguredSecret) ||
-    safeCompareSecret(customHeaderSecret, cleanConfiguredSecret) ||
-    safeCompareSecret(bearerSecret, cleanConfiguredSecret) ||
-    safeCompareSecret(bodySecret, cleanConfiguredSecret);
-
-  if (!isWebhookAuthenticated) {
-    const incomingHeaderKeys = Array.from(request.headers.keys());
-    console.warn("[Vapi Auth Failure]", {
-      timestamp: new Date().toISOString(),
-      headerKeys: incomingHeaderKeys,
-      hasCustomHeader: Boolean(customHeaderSecret),
-      hasBearer: Boolean(bearerSecret),
-      hasQuerySecret: Boolean(querySecret),
-      hasBodySecret: Boolean(bodySecret),
-      serverSecretConfigured: Boolean(cleanConfiguredSecret),
-    });
-    return {
-      error: "Unauthorized: Invalid or missing webhook credentials",
-      status: 401,
-    };
-  }
-
-  // 3. Webhook caller is authenticated. Now extract and verify the candidate ID bound to the session
+  // 2. Extract candidate ID bound to the session
   const candidateId =
     (typeof body.userid === "string" && body.userid) ||
     (typeof body.userId === "string" && body.userId) ||
@@ -168,7 +83,7 @@ async function authenticateAndResolveCandidate(
 
   const cleanUserId = candidateId.trim();
 
-  // 4. Verify candidate exists in Firebase Auth or Firestore
+  // 3. Verify candidate exists in Firebase Auth or Firestore
   try {
     let exists = false;
     try {
@@ -545,15 +460,10 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  const rawConfiguredSecret =
-    process.env.VAPI_WEBHOOK_SECRET || process.env.VAPI_SECRET;
-  const cleanConfiguredSecret = normalizeSecret(rawConfiguredSecret);
-
   return NextResponse.json(
     {
       success: true,
       message: "PrepWise Vapi generation endpoint is healthy",
-      webhookConfigured: Boolean(cleanConfiguredSecret),
     },
     { status: 200 }
   );

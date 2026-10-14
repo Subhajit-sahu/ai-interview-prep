@@ -132,143 +132,17 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     });
   };
 
-  // ---------------- SECURITY REGRESSION TESTS ----------------
+  // ---------------- DIRECT ACCESS & IDENTITY VALIDATION TESTS ----------------
 
-  it("Security 1: Request with existing UID but NO webhook secret is strictly REJECTED (401 Unauthorized)", async () => {
-    global.fetch = vi.fn();
-    // Caller provides a known existing UID, but no x-vapi-secret or Bearer credential
-    const req = createRequest(validPayload);
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(401);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("webhook credentials");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("Security 2: Request with existing UID but WRONG webhook secret is strictly REJECTED (401 Unauthorized)", async () => {
-    global.fetch = vi.fn();
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": "incorrect-secret",
-    });
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(401);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("webhook credentials");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("Security 3: When VAPI_WEBHOOK_SECRET is unconfigured on the server, endpoint FAILS CLOSED (500) and never accepts unauthenticated calls", async () => {
-    delete process.env.VAPI_WEBHOOK_SECRET;
-    global.fetch = vi.fn();
-
-    const req = createRequest(validPayload);
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(500);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("VAPI_WEBHOOK_SECRET is not configured");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("Security 4: Valid webhook secret with NON-EXISTENT candidate UID is REJECTED (403 Forbidden)", async () => {
-    global.fetch = vi.fn();
-    const req = createRequest(
-      {
-        ...validPayload,
-        userid: "non-existent-arbitrary-uid",
-      },
-      {
-        "x-vapi-secret": TEST_WEBHOOK_SECRET,
-      }
-    );
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(403);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("Candidate does not exist");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("Security 5: Valid webhook secret with missing candidate userid is REJECTED (400 Bad Request)", async () => {
-    global.fetch = vi.fn();
-    const payloadWithoutId = { ...validPayload };
-    delete (payloadWithoutId as Record<string, unknown>).userid;
-
-    const req = createRequest(payloadWithoutId, {
-      "x-vapi-secret": TEST_WEBHOOK_SECRET,
-    });
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(400);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("userid");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("Security 6: Cryptographic candidate ID token is verified directly via Firebase Admin without requiring webhook secret", async () => {
-    mockVerifyIdToken.mockResolvedValue({ uid: "cryptographically-verified-user" });
-    mockOpenRouterSuccess(["Question 1", "Question 2", "Question 3"]);
-
-    const req = createRequest({
-      role: "Backend Engineer",
-      type: "Technical",
-      level: "Mid",
-      amount: 3,
-      techstack: "Node.js, PostgreSQL",
-      userToken: "valid-firebase-id-token",
-    });
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(data.success).toBe(true);
-    expect(mockVerifyIdToken).toHaveBeenCalledWith("valid-firebase-id-token");
-    expect(mockAdd).toHaveBeenCalledTimes(1);
-    expect(mockAdd.mock.calls[0][0].userId).toBe("cryptographically-verified-user");
-  });
-
-  it("Security 7: Invalid or expired candidate ID token is strictly REJECTED (401 Unauthorized)", async () => {
-    mockVerifyIdToken.mockRejectedValue(new Error("Token expired"));
-    global.fetch = vi.fn();
-
-    const req = createRequest({
-      ...validPayload,
-      userToken: "expired-or-malformed-token",
-    });
-    const res = await POST(req);
-    const data = await res.json();
-
-    expect(res.status).toBe(401);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain("Invalid or expired candidate verification token");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  // ---------------- HAPPY PATH & BUSINESS LOGIC TESTS ----------------
-
-  it("Happy Path: Valid webhook secret with existing candidate UID executes generation and persists interview", async () => {
+  it("Direct Access 1: Request with existing candidate UID without ANY webhook credentials succeeds directly", async () => {
     mockOpenRouterSuccess([
       "Explain React state management",
       "Describe event loop in JavaScript",
       "What is TypeScript type narrowing",
     ]);
 
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": TEST_WEBHOOK_SECRET,
-    });
+    // No webhook secret, no authorization header, no query secret
+    const req = createRequest(validPayload);
     const res = await POST(req);
     const data = await res.json();
 
@@ -290,113 +164,107 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     expect(savedDoc.createdAt).toBeDefined();
   });
 
-  it("Happy Path: Also accepts Authorization Bearer header matching VAPI_WEBHOOK_SECRET", async () => {
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = createRequest(validPayload, {
-      authorization: `Bearer ${TEST_WEBHOOK_SECRET}`,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-  });
-
-  it("Authentication: Server secret with trailing newline and quotes matches clean incoming header", async () => {
-    process.env.VAPI_WEBHOOK_SECRET = `"${TEST_WEBHOOK_SECRET}\r\n"`;
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": TEST_WEBHOOK_SECRET,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-  });
-
-  it("Authentication: Incoming x-vapi-secret with surrounding quotes or whitespace matches server secret", async () => {
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": `  "${TEST_WEBHOOK_SECRET}"  `,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-  });
-
-  it("Authentication: Whitespace-only VAPI_WEBHOOK_SECRET fails closed with HTTP 500", async () => {
-    process.env.VAPI_WEBHOOK_SECRET = "   \n\t  ";
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": TEST_WEBHOOK_SECRET,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(500);
-    const data = await res.json();
-    expect(data.error).toContain("VAPI_WEBHOOK_SECRET is not configured");
-  });
-
-  it("Authentication: Fallback to VAPI_SECRET succeeds when VAPI_WEBHOOK_SECRET is unset", async () => {
+  it("Direct Access 2: Request succeeds when VAPI_WEBHOOK_SECRET is completely unset on the server", async () => {
     delete process.env.VAPI_WEBHOOK_SECRET;
-    process.env.VAPI_SECRET = "fallback-secret-987";
+    delete process.env.VAPI_SECRET;
     mockOpenRouterSuccess(["Valid question"]);
 
-    const req = createRequest(validPayload, {
-      "x-vapi-secret": "fallback-secret-987",
-    });
+    const req = createRequest(validPayload);
     const res = await POST(req);
+    const data = await res.json();
+
     expect(res.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(data.interviewId).toBe("interview-doc-999");
   });
 
-  it("Authentication: Accepts alternate header variants vapi-secret and x-webhook-secret", async () => {
+  it("Direct Access 3: Tolerates arbitrary headers or secrets without 401 failure", async () => {
     mockOpenRouterSuccess(["Valid question"]);
 
-    const req1 = createRequest(validPayload, {
-      "vapi-secret": TEST_WEBHOOK_SECRET,
-    });
-    const res1 = await POST(req1);
-    expect(res1.status).toBe(200);
-
-    const req2 = createRequest(validPayload, {
-      "x-webhook-secret": TEST_WEBHOOK_SECRET,
-    });
-    const res2 = await POST(req2);
-    expect(res2.status).toBe(200);
-  });
-
-  it("Authentication: Accepts raw Authorization header without Bearer prefix", async () => {
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = createRequest(validPayload, {
-      authorization: TEST_WEBHOOK_SECRET,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-  });
-
-  it("Authentication: Accepts webhook secret in body when headers are omitted", async () => {
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = createRequest({
-      ...validPayload,
-      secret: TEST_WEBHOOK_SECRET,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-  });
-
-  it("Authentication: Accepts ?secret= query parameter fallback", async () => {
-    mockOpenRouterSuccess(["Valid question"]);
-
-    const req = new Request(
-      `http://localhost:3000/api/vapi/generate?secret=${TEST_WEBHOOK_SECRET}`,
+    const req = createRequest(
+      { ...validPayload, secret: "arbitrary-secret" },
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(validPayload),
+        "x-vapi-secret": "arbitrary-secret",
+        authorization: "Bearer arbitrary-token",
       }
     );
     const res = await POST(req);
-    expect(res.status).toBe(200);
     const data = await res.json();
+
+    expect(res.status).toBe(200);
     expect(data.success).toBe(true);
-    expect(data.interviewId).toBeDefined();
+  });
+
+  it("Candidate Validation 1: Request with NON-EXISTENT candidate UID is REJECTED (403 Forbidden)", async () => {
+    global.fetch = vi.fn();
+    const req = createRequest({
+      ...validPayload,
+      userid: "non-existent-arbitrary-uid",
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(data.success).toBe(false);
+    expect(data.error).toContain("Candidate does not exist");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockAdd).not.toHaveBeenCalled();
+  });
+
+  it("Candidate Validation 2: Request with missing candidate userid is REJECTED (400 Bad Request)", async () => {
+    global.fetch = vi.fn();
+    const payloadWithoutId = { ...validPayload };
+    delete (payloadWithoutId as Record<string, unknown>).userid;
+
+    const req = createRequest(payloadWithoutId);
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toContain("userid");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockAdd).not.toHaveBeenCalled();
+  });
+
+  it("Candidate Token 1: Cryptographic candidate ID token is verified directly via Firebase Admin", async () => {
+    mockVerifyIdToken.mockResolvedValue({ uid: "cryptographically-verified-user" });
+    mockOpenRouterSuccess(["Question 1", "Question 2", "Question 3"]);
+
+    const req = createRequest({
+      role: "Backend Engineer",
+      type: "Technical",
+      level: "Mid",
+      amount: 3,
+      techstack: "Node.js, PostgreSQL",
+      userToken: "valid-firebase-id-token",
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockVerifyIdToken).toHaveBeenCalledWith("valid-firebase-id-token");
+    expect(mockAdd).toHaveBeenCalledTimes(1);
+    expect(mockAdd.mock.calls[0][0].userId).toBe("cryptographically-verified-user");
+  });
+
+  it("Candidate Token 2: Invalid or expired candidate ID token is strictly REJECTED (401 Unauthorized)", async () => {
+    mockVerifyIdToken.mockRejectedValue(new Error("Token expired"));
+    global.fetch = vi.fn();
+
+    const req = createRequest({
+      ...validPayload,
+      userToken: "expired-or-malformed-token",
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(data.success).toBe(false);
+    expect(data.error).toContain("Invalid or expired candidate verification token");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockAdd).not.toHaveBeenCalled();
   });
 
   it("Vapi Payload Unwrapping: Unwraps message.toolCallList payload and returns { results: [{ toolCallId, result }] }", async () => {
