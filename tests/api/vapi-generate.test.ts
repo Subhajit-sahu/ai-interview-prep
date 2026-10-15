@@ -73,7 +73,7 @@ describe("Vapi Interview Generation API — Strict Security & Identity Binding",
     // Default mock behavior for verified test user
     mockGetUser.mockImplementation(async (uid: string) => {
       if (uid === "existing-candidate-uid") {
-        return { uid: "existing-candidate-uid", email: "candidate@prepwise.com" };
+        return { uid: "existing-candidate-uid", email: "candidate@intervyo.com" };
       }
       throw new Error("User not found in Firebase Auth");
     });

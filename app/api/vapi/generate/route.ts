@@ -493,7 +493,7 @@ export async function GET() {
   return NextResponse.json(
     {
       success: true,
-      message: "PrepWise Vapi generation endpoint is healthy",
+      message: "Intervyo Vapi generation endpoint is healthy",
     },
     { status: 200 }
   );
